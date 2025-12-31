@@ -7,7 +7,7 @@ import { collection, addDoc, query, onSnapshot, orderBy, Timestamp, deleteDoc, d
 
 const CATEGORIES = ["食費", "日用品", "家賃・光熱費", "デート・外食", "その他"];
 // ここに許可するメールアドレスを入力
-const ALLOWED_EMAILS = ["あなたのメールアドレス@gmail.com", "彼女のメールアドレス@gmail.com"];
+const ALLOWED_EMAILS = ["daiki.2002.1014@gmail.com", "negishi.akane1553@gmail.com"];
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
