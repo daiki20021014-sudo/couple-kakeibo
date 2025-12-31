@@ -8,7 +8,7 @@ import { collection, addDoc, query, onSnapshot, orderBy, Timestamp, deleteDoc, d
 const CATEGORIES = ["食費", "日用品", "家賃・光熱費", "デート・外食", "その他"];
 
 // ★修正：環境変数からアドレスを読み込む（セキュリティ対策）
-const ALLOWED_EMAILS = ["daiki.2002.1014@gmail.com", "negishi.akane1553@gmail.com"];
+const ALLOWED_EMAILS = (process.env.NEXT_PUBLIC_ALLOWED_EMAILS || "").split(",");
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
