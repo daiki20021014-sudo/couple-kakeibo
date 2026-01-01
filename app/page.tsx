@@ -1,270 +1,333 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { auth, db } from '../lib/firebase'; 
-import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { collection, addDoc, query, onSnapshot, orderBy, Timestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+import { auth, db } from './firebase'; 
+import { GoogleAuthProvider, signInWithRedirect, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { collection, addDoc, query, onSnapshot, orderBy, Timestamp, deleteDoc, doc, updateDoc, setDoc, getDoc } from 'firebase/firestore';
+import toast, { Toaster } from 'react-hot-toast';
+import { format } from 'date-fns';
 
-const CATEGORIES = ["食費", "日用品", "家賃・光熱費", "デート・外食", "その他"];
+// コンポーネント（※これらのファイルが存在することを確認してください）
+import SummaryChart from './components/SummaryChart';
+import CalendarView from './components/CalendarView';
+import SettlementModal from './components/SettlementModal';
+import BalanceStatus from './components/BalanceStatus';
+import ExpenseForm from './components/ExpenseForm';
+import HistoryList from './components/HistoryList';
+import BudgetCard from './components/BudgetCard'; 
+import SettingsModal from './components/SettingsModal'; 
 
-// ★修正：環境変数からアドレスを読み込む（セキュリティ対策）
-const ALLOWED_EMAILS = (process.env.NEXT_PUBLIC_ALLOWED_EMAILS || "").split(",");
+const ALLOWED_EMAILS = ["daiki.2002.1014@gmail.com", "negishi.akane1553@gmail.com"];
+
+// 初期カテゴリ
+const DEFAULT_CATEGORIES = [
+  { name: "食費", icon: "🍙" },
+  { name: "日用品", icon: "🧻" },
+  { name: "家賃・光熱費", icon: "🏠" },
+  { name: "デート・外食", icon: "🥂" },
+  { name: "交通費", icon: "🚃" },
+  { name: "その他", icon: "🐈" }
+];
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [title, setTitle] = useState("");
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState(CATEGORIES[0]);
-  const [splitType, setSplitType] = useState<'full' | 'half' | 'ratio'>('full');
-  const [myRatio, setMyRatio] = useState("50");
   const [expenses, setExpenses] = useState<any[]>([]);
   const [isAllowed, setIsAllowed] = useState(false);
-  const [viewMonth, setViewMonth] = useState<'this' | 'last'>('this');
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingEx, setEditingEx] = useState<any>(null);
 
-  // 1. ログイン監視と権限チェック
+  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
+  const [currentMonthStr, setCurrentMonthStr] = useState(format(new Date(), 'yyyy-MM'));
+  const [selectedDateStr, setSelectedDateStr] = useState(new Date().toISOString().split('T')[0]);
+   
+  const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
+  // ★設定画面の開閉
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // ★設定データ（予算とカテゴリ）
+  const [budget, setBudget] = useState(0);
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser && ALLOWED_EMAILS.map(e => e.trim().toLowerCase()).includes(currentUser.email?.toLowerCase() || "")) {
-        setIsAllowed(true);
-      } else {
-        setIsAllowed(false);
-      }
+      if (currentUser && ALLOWED_EMAILS.includes(currentUser.email || "")) setIsAllowed(true);
+      else setIsAllowed(false);
       setLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // 2. データのリアルタイム取得
+  // 設定データの読み込み
   useEffect(() => {
     if (!user || !isAllowed) return;
+    const unsubSettings = onSnapshot(doc(db, "settings", "common"), (doc) => {
+        if (doc.exists()) {
+            const data = doc.data();
+            setBudget(data.budget || 0);
+            if (data.categories) setCategories(data.categories);
+        }
+    });
+
+    // 支出データの読み込み
     const q = query(collection(db, "expenses"), orderBy("date", "desc"));
-    return onSnapshot(q, (snapshot) => {
+    const unsubExpenses = onSnapshot(q, (snapshot) => {
       setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
+
+    return () => { unsubSettings(); unsubExpenses(); };
   }, [user, isAllowed]);
 
-  // 表示月のフィルタリング
-  const filteredExpenses = useMemo(() => {
-    const now = new Date();
-    const targetMonth = viewMonth === 'this' ? now.getMonth() : now.getMonth() - 1;
-    const targetYear = viewMonth === 'this' ? now.getFullYear() : (targetMonth < 0 ? now.getFullYear() - 1 : now.getFullYear());
-    const adjustedMonth = targetMonth < 0 ? 11 : targetMonth;
+  // 設定の保存処理
+  const handleSaveSettings = async (newBudget: number, newCategories: any[]) => {
+      try {
+          await setDoc(doc(db, "settings", "common"), {
+              budget: newBudget,
+              categories: newCategories
+          }, { merge: true });
+          toast.success("設定を保存しました⚙️");
+      } catch (e) {
+          toast.error("設定の保存に失敗しました");
+      }
+  };
 
-    return expenses.filter(ex => {
-      const d = ex.date?.toDate();
-      return d && d.getMonth() === adjustedMonth && d.getFullYear() === targetYear;
-    });
-  }, [expenses, viewMonth]);
-
-  // 貸し借り・統計計算
   const stats = useMemo(() => {
-    const res: any = { total: 0, users: {}, categories: {} };
-    CATEGORIES.forEach(c => res.categories[c] = 0);
+    const res: any = { total: 0, users: {} };
     ALLOWED_EMAILS.forEach(email => {
-      // 空白除去してからキーにする
-      const cleanEmail = email.trim();
-      res.users[cleanEmail] = { paid: 0, shouldPay: 0, photo: '', name: '' };
+      res.users[email] = { paid: 0, shouldPay: 0, repaid: 0, received: 0, photo: '', name: '' };
     });
 
-    filteredExpenses.forEach(ex => {
-      const amt = ex.amount;
-      res.total += amt;
-      res.categories[ex.category] += amt;
-
-      // 支払い者の特定
+    expenses.forEach(ex => {
       let payerEmail = ex.payerEmail;
       if (!payerEmail && ex.uid === auth.currentUser?.uid) payerEmail = auth.currentUser?.email;
-      // 過去データなどでemailが特定できない場合のフォールバック
       if (!payerEmail) return;
 
       if (res.users[payerEmail]) {
-        res.users[payerEmail].paid += amt;
         res.users[payerEmail].photo = ex.userPhoto;
         res.users[payerEmail].name = ex.userName;
       }
+      if (ex.type !== 'settlement' && res.users[ex.payerEmail]) {
+         res.users[ex.payerEmail].name = ex.userName;
+         res.users[ex.payerEmail].photo = ex.userPhoto;
+      }
 
-      const ratio = ex.myRatio ?? 100;
-      const otherRatio = 100 - ratio;
-      // 相手のアドレスを探す
-      const otherEmail = ALLOWED_EMAILS.map(e=>e.trim()).find(e => e !== payerEmail);
+      if (ex.type === 'settlement') {
+        const receiverEmail = ex.category;
+        if (res.users[payerEmail]) res.users[payerEmail].repaid += ex.amount;
+        if (res.users[receiverEmail]) res.users[receiverEmail].received += ex.amount;
+      } else {
+        const amt = ex.amount;
+        res.total += amt;
+        
+        if (res.users[payerEmail]) res.users[payerEmail].paid += amt;
 
-      if (res.users[payerEmail]) res.users[payerEmail].shouldPay += (amt * (ratio / 100));
-      if (otherEmail && res.users[otherEmail]) res.users[otherEmail].shouldPay += (amt * (otherRatio / 100));
+        const ratio = ex.myRatio ?? 100;
+        const otherRatio = 100 - ratio;
+        const otherEmail = ALLOWED_EMAILS.find(e => e !== payerEmail);
+
+        if (res.users[payerEmail]) res.users[payerEmail].shouldPay += (amt * (ratio / 100));
+        if (otherEmail && res.users[otherEmail]) res.users[otherEmail].shouldPay += (amt * (otherRatio / 100));
+      }
     });
     return res;
-  }, [filteredExpenses]);
+  }, [expenses]);
 
-  // 保存・更新処理
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title || !amount || !user) return;
-
-    const data = {
-      title,
-      amount: Number(amount),
-      category,
-      splitType,
-      myRatio: splitType === 'ratio' ? Number(myRatio) : (splitType === 'half' ? 50 : 100),
-      userName: user.displayName,
-      userPhoto: user.photoURL,
-      payerEmail: user.email,
-    };
-
-    try {
-      if (editingId) {
-        await updateDoc(doc(db, "expenses", editingId), data);
-        setEditingId(null);
+  const displayExpenses = useMemo(() => {
+    return expenses.filter(ex => {
+      const d = ex.date?.toDate();
+      if (!d) return false;
+      if (viewMode === 'calendar') {
+        return format(d, 'yyyy-MM-dd') === selectedDateStr;
       } else {
-        await addDoc(collection(db, "expenses"), { ...data, date: Timestamp.now(), uid: user.uid });
+        return format(d, 'yyyy-MM') === currentMonthStr;
       }
-      setTitle(""); setAmount(""); setSplitType('full'); setMyRatio("50");
+    });
+  }, [expenses, viewMode, selectedDateStr, currentMonthStr]);
+
+  const currentMonthTotal = useMemo(() => {
+     return expenses.filter(ex => {
+        const d = ex.date?.toDate();
+        return d && format(d, 'yyyy-MM') === format(new Date(), 'yyyy-MM') && ex.type !== 'settlement';
+     }).reduce((sum, ex) => sum + ex.amount, 0);
+  }, [expenses]);
+
+  const myDiff = useMemo(() => {
+      if (!user || !user.email) return 0;
+      const d = stats.users[user.email];
+      if (!d) return 0;
+      return (d.paid - d.shouldPay) + (d.repaid - d.received);
+  }, [stats, user]);
+
+  const handleSaveExpense = async (data: any) => {
+    if (!user) return;
+    const saveData = {
+        ...data,
+        date: Timestamp.fromDate(data.date),
+        uid: user.uid,
+        userName: user.displayName, 
+        userPhoto: user.photoURL,
+        type: 'expense'
+    };
+    try {
+      if (editingEx) {
+        await updateDoc(doc(db, "expenses", editingEx.id), saveData);
+        toast.success("修正しました✨");
+        setEditingEx(null);
+      } else {
+        await addDoc(collection(db, "expenses"), saveData);
+      }
     } catch (error) {
-      console.error("Error adding document: ", error);
-      alert("保存に失敗しました。");
+      console.error(error);
+      toast.error("エラーが発生しました");
     }
   };
 
-  const handleEdit = (ex: any) => {
-    setEditingId(ex.id);
-    setTitle(ex.title);
-    setAmount(ex.amount.toString());
-    setCategory(ex.category);
-    setSplitType(ex.splitType || 'full');
-    setMyRatio(ex.myRatio?.toString() || "50");
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  const handleSettleSubmit = async (repayAmount: number, method: string, payerEmail: string) => {
+      if (!user) return;
+      const receiverEmail = ALLOWED_EMAILS.find(e => e !== payerEmail) || "";
+      try {
+          await addDoc(collection(db, "expenses"), {
+              title: `返済 (${method})`, 
+              amount: repayAmount,
+              category: receiverEmail,
+              date: Timestamp.now(),
+              uid: user.uid, 
+              userName: user.displayName,
+              userPhoto: user.photoURL,
+              payerEmail: payerEmail,
+              type: 'settlement',
+              note: method
+          });
+          toast.success("返済を記録しました！🎉");
+          setIsSettleModalOpen(false);
+      } catch (e) {
+          toast.error("記録に失敗しました");
+      }
   };
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center dark:bg-slate-950 dark:text-white font-black animate-pulse">読み込み中...</div>;
+  const handleDelete = async (id: string) => {
+    if (window.confirm('削除しますか？')) {
+        await deleteDoc(doc(db, "expenses", id));
+        toast.success("削除しました");
+    }
+  }
+
+  const handleEdit = (ex: any) => {
+    if (ex.type === 'settlement') {
+      if(window.confirm('清算履歴を削除しますか？')) handleDelete(ex.id);
+      return;
+    }
+    setEditingEx(ex);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    toast("編集モードです✏️");
+  };
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#FFF5F7] text-pink-400 font-bold animate-pulse">読み込み中...💕</div>;
 
   return (
-    <main className="min-h-screen bg-[#F8FAFC] dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-300 pb-20 font-sans">
-      <div className="max-w-xl mx-auto px-6">
-        
+    <main className="min-h-screen bg-[#FFF5F7] text-slate-600 pb-24 font-sans selection:bg-pink-200">
+      <Toaster position="bottom-center" toastOptions={{ style: { borderRadius: '20px', background: 'rgba(255,255,255,0.9)', color: '#333' } }} />
+      
+      <SettlementModal 
+        isOpen={isSettleModalOpen} 
+        onClose={() => setIsSettleModalOpen(false)}
+        onSettle={handleSettleSubmit}
+        maxAmount={myDiff}
+        users={stats.users}
+        currentUserEmail={user?.email || ""}
+        partnerEmail={ALLOWED_EMAILS.find(e => e !== user?.email) || ""}
+      />
+
+      <SettingsModal 
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        currentBudget={budget}
+        currentCategories={categories}
+        onSave={handleSaveSettings}
+      />
+
+      <div className="max-w-md mx-auto px-5">
         <header className="pt-10 pb-6 flex justify-between items-center">
-          <h1 className="text-2xl font-black tracking-tighter">ふたりの家計簿</h1>
-          <div className="flex gap-2">
-            <button onClick={() => setViewMonth('this')} className={`text-[10px] px-3 py-1 rounded-full font-bold ${viewMonth === 'this' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'bg-slate-200 dark:bg-slate-800 text-slate-500'}`}>今月</button>
-            <button onClick={() => setViewMonth('last')} className={`text-[10px] px-3 py-1 rounded-full font-bold ${viewMonth === 'last' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'bg-slate-200 dark:bg-slate-800 text-slate-500'}`}>先月</button>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-slate-700">ふたりの家計簿 🧸</h1>
+            <p className="text-[10px] text-pink-400 font-bold mt-1">Two people's household account book</p>
           </div>
-          {user && <img src={user.photoURL || ""} className="w-10 h-10 rounded-full border-2 border-white dark:border-slate-800 shadow-lg cursor-pointer ml-4" onClick={() => confirm('ログアウトしますか？') && signOut(auth)} />}
+          <div className="flex gap-3">
+             {user && (
+                 <button onClick={() => setIsSettingsOpen(true)} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors">
+                     ⚙️
+                 </button>
+             )}
+             {user && (
+                <button onClick={() => { if(window.confirm('ログアウトしますか？')) signOut(auth) }} className="transition-transform hover:scale-110">
+                <img src={user.photoURL || ""} className="w-10 h-10 rounded-full border-2 border-white shadow-md" />
+                </button>
+             )}
+          </div>
         </header>
 
         {user && isAllowed ? (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
             
-            {/* 清算パネル */}
-            <div className="grid grid-cols-2 gap-4">
-              {Object.entries(stats.users).map(([email, data]: any) => {
-                const diff = data.paid - data.shouldPay;
-                return (
-                  <div key={email} className="bg-white dark:bg-slate-900 p-5 rounded-[28px] border border-slate-100 dark:border-slate-800 shadow-sm text-center">
-                    <img src={data.photo || "https://ui-avatars.com/api/?name=User"} className="w-10 h-10 rounded-full mx-auto mb-2 border-2 border-slate-50 dark:border-slate-800" />
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest truncate mb-1">{data.name || 'ゲスト'}</p>
-                    <div className="space-y-0.5">
-                      <p className="text-xs font-bold text-slate-400 text-[9px]">支出: ¥{data.paid.toLocaleString()}</p>
-                      <p className={`text-sm font-black ${diff >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        {diff >= 0 ? `+¥${Math.abs(diff).toLocaleString()}` : `-¥${Math.abs(diff).toLocaleString()}`}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* 合計表示 */}
-            <section className="bg-slate-900 dark:bg-white p-8 rounded-[32px] shadow-2xl text-center">
-              <p className="text-slate-400 dark:text-slate-500 text-[10px] font-black uppercase tracking-[0.2em] mb-1">二人の合計支出</p>
-              <div className="text-5xl font-black text-white dark:text-slate-900 tracking-tighter">¥{stats.total.toLocaleString()}</div>
-            </section>
-
-            {/* 入力フォーム */}
-            <form onSubmit={handleSubmit} className="bg-white dark:bg-slate-900 p-6 rounded-[32px] shadow-xl border-2 border-slate-900 dark:border-blue-600 space-y-4">
-              <h2 className="font-black text-sm text-center">{editingId ? '✨ 支出を修正中' : '📝 新しい支出を入力'}</h2>
-              <input type="text" placeholder="何に使った？" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl outline-none focus:ring-4 ring-blue-500/10 dark:text-white" required />
-              <div className="grid grid-cols-2 gap-3">
-                <input type="number" placeholder="金額" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl outline-none dark:text-white" required />
-                <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl outline-none text-sm dark:text-white appearance-none">
-                  {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                </select>
-              </div>
-
-              <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl space-y-3">
-                <p className="text-[10px] font-black text-slate-400 uppercase text-center tracking-widest">支払い割合設定</p>
-                <div className="flex gap-2">
-                  {['full', 'half', 'ratio'].map(t => (
-                    <button key={t} type="button" onClick={() => setSplitType(t as any)} className={`flex-1 py-2 text-[10px] font-bold rounded-xl transition-all ${splitType === t ? 'bg-slate-900 text-white dark:bg-blue-600' : 'bg-white dark:bg-slate-800 text-slate-400'}`}>
-                      {t === 'full' ? '自分全額' : t === 'half' ? '50:50' : '割合指定'}
-                    </button>
-                  ))}
+            <div className="flex gap-2">
+                <div className="bg-white p-1 rounded-full shadow-sm flex text-xs font-bold flex-1">
+                    <button onClick={() => setViewMode('list')} className={`flex-1 py-2 rounded-full transition-all ${viewMode === 'list' ? 'bg-pink-400 text-white shadow-md' : 'text-slate-400'}`}>📋 リスト</button>
+                    <button onClick={() => setViewMode('calendar')} className={`flex-1 py-2 rounded-full transition-all ${viewMode === 'calendar' ? 'bg-pink-400 text-white shadow-md' : 'text-slate-400'}`}>📅 カレンダー</button>
                 </div>
-                {splitType === 'ratio' && (
-                  <div className="flex items-center gap-3 pt-2">
-                    <input type="range" min="0" max="100" step="10" value={myRatio} onChange={(e) => setMyRatio(e.target.value)} className="flex-1 accent-slate-900 dark:accent-blue-500" />
-                    <span className="text-xs font-black w-8">{myRatio}%</span>
-                  </div>
+                {viewMode === 'list' && (
+                    <div className="bg-white p-1 rounded-full shadow-sm flex items-center px-2 gap-2 text-xs font-bold text-pink-400">
+                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() - 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}}>←</button>
+                        <span>{currentMonthStr.split('-')[1]}月</span>
+                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() + 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}}>→</button>
+                    </div>
                 )}
-              </div>
-              <button className={`w-full p-4 rounded-2xl font-black text-white shadow-lg active:scale-95 transition-all ${editingId ? 'bg-blue-600' : 'bg-slate-900 dark:bg-blue-600'}`}>
-                {editingId ? '内容を更新する' : 'この支出を保存する'}
-              </button>
-              {editingId && <button type="button" onClick={() => setEditingId(null)} className="w-full text-[10px] font-bold text-slate-400 uppercase tracking-widest">キャンセル</button>}
-            </form>
-
-            {/* 履歴リスト */}
-            <div className="space-y-3 pb-10">
-              <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-4">最近の履歴</h2>
-              {filteredExpenses.map((ex) => {
-                const date = ex.date?.toDate();
-                const timeStr = date ? `${date.getMonth()+1}/${date.getDate()} ${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}` : '';
-                return (
-                  <div key={ex.id} className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex justify-between items-center group shadow-sm">
-                    <div className="flex items-center gap-3">
-                      <img src={ex.userPhoto} className="w-10 h-10 rounded-full border-2 border-white dark:border-slate-800" />
-                      <div>
-                        <p className="font-bold text-sm leading-tight">{ex.title}</p>
-                        <p className="text-[9px] font-bold text-slate-400 uppercase">{timeStr} ・ {ex.category}</p>
-                        {ex.splitType !== 'full' && <p className="text-[9px] font-black text-blue-500 mt-0.5">負担比率: {ex.myRatio}%</p>}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <p className="font-black text-sm text-slate-800 dark:text-white">¥{ex.amount.toLocaleString()}</p>
-                      
-                      {/* ★修正：操作ボタンを見やすく、押しやすく変更 */}
-                      <div className="flex gap-2">
-                        <button onClick={() => handleEdit(ex)} className="w-8 h-8 flex items-center justify-center bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-full hover:bg-blue-500 hover:text-white transition-all">
-                          ✏️
-                        </button>
-                        <button onClick={() => confirm('本当に削除しますか？') && deleteDoc(doc(db, "expenses", ex.id))} className="w-8 h-8 flex items-center justify-center bg-rose-100 dark:bg-rose-900/30 text-rose-500 rounded-full hover:bg-rose-500 hover:text-white transition-all">
-                          🗑️
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {filteredExpenses.length === 0 && <p className="text-center text-xs text-slate-400 py-4">まだ履歴がありません</p>}
             </div>
+
+            {viewMode === 'list' ? (
+                <>
+                    {/* ★予算カード */}
+                    <BudgetCard budget={budget} totalExpense={currentMonthTotal} />
+
+                    <section className="relative overflow-hidden bg-white p-6 rounded-[30px] shadow-lg shadow-pink-100 text-center border border-pink-50">
+                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-pink-300 to-orange-200"></div>
+                        <p className="text-pink-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Expenses (Selected)</p>
+                        <div className="text-4xl font-black text-slate-700 tracking-tighter">
+                            <span className="text-lg text-slate-400 mr-1">¥</span>
+                            {displayExpenses.filter(e => e.type !== 'settlement').reduce((sum, e) => sum + e.amount, 0).toLocaleString()}
+                        </div>
+                    </section>
+                    
+                    <BalanceStatus 
+                        stats={stats} 
+                        currentUserEmail={user?.email || ""} 
+                        onOpenSettleModal={() => setIsSettleModalOpen(true)} 
+                    />
+
+                    <SummaryChart expenses={displayExpenses.filter(e => e.type !== 'settlement')} />
+                </>
+            ) : (
+                <CalendarView expenses={expenses} currentDate={selectedDateStr} onDateChange={setSelectedDateStr} />
+            )}
+
+            <ExpenseForm 
+                user={user}
+                users={stats.users}
+                categories={categories}
+                onSubmit={handleSaveExpense}
+                editingData={editingEx}
+                onCancelEdit={() => { setEditingEx(null); toast("キャンセルしました"); }}
+            />
+
+            <HistoryList 
+                expenses={displayExpenses} 
+                users={stats.users} 
+                categories={categories}
+                onEdit={handleEdit} 
+                onDelete={handleDelete} 
+            />
           </div>
         ) : (
-          /* ★修正：ログインボタンを追加 */
-          !loading && (
-            <div className="flex flex-col items-center justify-center py-20 space-y-6 animate-in fade-in zoom-in duration-500">
-              <div className="text-center space-y-2">
-                <p className="text-lg font-black text-slate-900 dark:text-white">ようこそ</p>
-                <p className="text-slate-400 text-sm">二人だけの共有家計簿へ</p>
-              </div>
-              <button 
-                onClick={() => signInWithPopup(auth, new GoogleAuthProvider())}
-                className="bg-slate-900 dark:bg-blue-600 text-white px-8 py-4 rounded-full font-bold shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
-              >
-                <span>Googleでログインして開始</span>
-              </button>
-              <p className="text-[10px] text-slate-400">※許可されたアカウントのみ利用可能です</p>
-            </div>
-          )
+           !loading && <div className="text-center py-20"><button onClick={() => signInWithRedirect(auth, new GoogleAuthProvider())} className="bg-slate-800 text-white px-8 py-4 rounded-full font-bold">Googleでログイン</button></div>
         )}
       </div>
     </main>
