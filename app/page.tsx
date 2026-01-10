@@ -35,9 +35,9 @@ export default function Home() {
   const [isAllowed, setIsAllowed] = useState(false);
   const [editingEx, setEditingEx] = useState<any>(null);
 
-  // タブ管理（home | history）に変更
+  // タブ管理（home | history）
   const [activeTab, setActiveTab] = useState<'home' | 'history'>('home');
-  // 履歴タブ内での表示モード（リスト or カレンダー）
+  // 履歴タブ内での表示モード（list | calendar）
   const [historyMode, setHistoryMode] = useState<'list' | 'calendar'>('list');
 
   const [currentMonthStr, setCurrentMonthStr] = useState(format(new Date(), 'yyyy-MM'));
@@ -100,7 +100,6 @@ export default function Home() {
     const partnerEmail = ALLOWED_EMAILS.find(e => e !== myEmail);
 
     expenses.forEach(ex => {
-      // アイコン処理
       if (user && ex.uid === user.uid) {
         if (myEmail && res.users[myEmail]) {
             res.users[myEmail].photo = ex.userPhoto;
@@ -138,7 +137,6 @@ export default function Home() {
     return res;
   }, [expenses, user]);
 
-  // 今月のデータのみ抽出（ダッシュボード用）
   const displayExpenses = useMemo(() => {
     return expenses.filter(ex => {
       const d = ex.date?.toDate();
@@ -164,36 +162,6 @@ export default function Home() {
       if (!d) return 0;
       return (d.paid - d.shouldPay) + (d.repaid - d.received);
   }, [stats, user]);
-
-  // 2人の支出比較データ（今月の全支出における自分の割合など）
-  const paymentRatio = useMemo(() => {
-      if (!user?.email) return { myPay: 0, partnerPay: 0, myPercent: 0 };
-      const myEmail = user.email;
-      const partnerEmail = ALLOWED_EMAILS.find(e => e !== myEmail) || '';
-      
-      // 今月の支出（清算除く）で計算
-      const thisMonthEx = expenses.filter(ex => {
-          const d = ex.date?.toDate();
-          return d && format(d, 'yyyy-MM') === currentMonthStr && ex.type !== 'settlement';
-      });
-
-      let myPay = 0;
-      let partnerPay = 0;
-
-      thisMonthEx.forEach(ex => {
-          let payer = ex.payerEmail;
-          if (!payer && ex.uid === user.uid) payer = myEmail;
-          
-          if (payer === myEmail) myPay += ex.amount;
-          else if (payer === partnerEmail) partnerPay += ex.amount;
-      });
-
-      const total = myPay + partnerPay;
-      const myPercent = total === 0 ? 0 : Math.round((myPay / total) * 100);
-
-      return { myPay, partnerPay, myPercent };
-  }, [expenses, currentMonthStr, user]);
-
 
   const handleSaveExpense = async (data: any) => {
     if (!user) return;
@@ -315,38 +283,13 @@ export default function Home() {
             {/* ★★★ 1. ホーム（ダッシュボード）タブ ★★★ */}
             {activeTab === 'home' && (
                 <>
-                    {/* ① 予算カード（既存） */}
+                    {/* ① 予算カード */}
                     <BudgetCard budget={budget} totalExpense={currentMonthTotal} />
 
-                    {/* ② 貸し借り状況（ダッシュボードの主役） */}
+                    {/* ② 貸し借り状況 */}
                     <BalanceStatus stats={stats} currentUserEmail={user?.email || ""} onOpenSettleModal={() => setIsSettleModalOpen(true)} />
 
-                    {/* ③ 二人の出費比較グラフ（新機能） */}
-                    <section className="bg-white p-6 rounded-[30px] shadow-sm border border-slate-100">
-                        <h3 className="text-xs font-bold text-gray-400 mb-4 uppercase tracking-widest">Payment Balance ({currentMonthStr.split('-')[1]}月)</h3>
-                        <div className="flex items-end gap-2 h-24 mb-2">
-                             {/* 自分のバー */}
-                             <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
-                                <span className="text-xs font-bold text-slate-700">¥{paymentRatio.myPay.toLocaleString()}</span>
-                                <div className="w-full bg-blue-100 rounded-t-xl relative overflow-hidden transition-all group-hover:bg-blue-200" style={{ height: `${paymentRatio.myPercent}%` }}>
-                                    <div className="absolute bottom-0 left-0 w-full h-1 bg-blue-400"></div>
-                                </div>
-                             </div>
-                             {/* 相手のバー */}
-                             <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
-                                <span className="text-xs font-bold text-slate-700">¥{paymentRatio.partnerPay.toLocaleString()}</span>
-                                <div className="w-full bg-pink-100 rounded-t-xl relative overflow-hidden transition-all group-hover:bg-pink-200" style={{ height: `${100 - paymentRatio.myPercent}%` }}>
-                                    <div className="absolute bottom-0 left-0 w-full h-1 bg-pink-400"></div>
-                                </div>
-                             </div>
-                        </div>
-                        <div className="flex justify-between text-[10px] text-gray-400 font-bold px-2">
-                            <span>YOU ({paymentRatio.myPercent}%)</span>
-                            <span>PARTNER ({100 - paymentRatio.myPercent}%)</span>
-                        </div>
-                    </section>
-
-                    {/* ④ カテゴリ別チャート（既存） */}
+                    {/* ③ カテゴリ別チャート（ここを新しくしました！） */}
                     <SummaryChart expenses={displayExpenses.filter(e => e.type !== 'settlement')} />
                 </>
             )}
@@ -393,7 +336,7 @@ export default function Home() {
         </button>
       )}
 
-      {/* ボトムナビゲーション（ホーム / 履歴） */}
+      {/* ボトムナビゲーション */}
       {user && isAllowed && (
         <nav className="fixed bottom-0 left-0 w-full bg-white/90 backdrop-blur-md border-t border-slate-100 pb-safe pt-2 px-6 z-40">
            <div className="max-w-md mx-auto flex justify-around items-center h-16">
