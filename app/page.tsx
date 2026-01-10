@@ -1,13 +1,15 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
+// ↓ パスを修正済みです
 import { auth, db } from './firebase'; 
-import { GoogleAuthProvider, signInWithRedirect, signOut, onAuthStateChanged, User } from 'firebase/auth';
+// ↓ ここを signInWithPopup に変更しました！
+import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { collection, addDoc, query, onSnapshot, orderBy, Timestamp, deleteDoc, doc, updateDoc, setDoc, getDoc } from 'firebase/firestore';
 import toast, { Toaster } from 'react-hot-toast';
 import { format } from 'date-fns';
 
-// コンポーネント（※これらのファイルが存在することを確認してください）
+// コンポーネント
 import SummaryChart from './components/SummaryChart';
 import CalendarView from './components/CalendarView';
 import SettlementModal from './components/SettlementModal';
@@ -41,10 +43,10 @@ export default function Home() {
   const [selectedDateStr, setSelectedDateStr] = useState(new Date().toISOString().split('T')[0]);
    
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
-  // ★設定画面の開閉
+  // 設定画面の開閉
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // ★設定データ（予算とカテゴリ）
+  // 設定データ（予算とカテゴリ）
   const [budget, setBudget] = useState(0);
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
 
@@ -222,6 +224,16 @@ export default function Home() {
     toast("編集モードです✏️");
   };
 
+  // ログイン処理（ポップアップ方式に変更）
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (error) {
+      console.error("Login failed", error);
+      toast.error("ログインに失敗しました");
+    }
+  };
+
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#FFF5F7] text-pink-400 font-bold animate-pulse">読み込み中...💕</div>;
 
   return (
@@ -285,7 +297,6 @@ export default function Home() {
 
             {viewMode === 'list' ? (
                 <>
-                    {/* ★予算カード */}
                     <BudgetCard budget={budget} totalExpense={currentMonthTotal} />
 
                     <section className="relative overflow-hidden bg-white p-6 rounded-[30px] shadow-lg shadow-pink-100 text-center border border-pink-50">
@@ -327,7 +338,14 @@ export default function Home() {
             />
           </div>
         ) : (
-           !loading && <div className="text-center py-20"><button onClick={() => signInWithRedirect(auth, new GoogleAuthProvider())} className="bg-slate-800 text-white px-8 py-4 rounded-full font-bold">Googleでログイン</button></div>
+           !loading && (
+             <div className="text-center py-20">
+               {/* ↓ ここも signInWithPopup を使うように変更済み */}
+               <button onClick={handleLogin} className="bg-slate-800 text-white px-8 py-4 rounded-full font-bold">
+                 Googleでログイン
+               </button>
+             </div>
+           )
         )}
       </div>
     </main>
