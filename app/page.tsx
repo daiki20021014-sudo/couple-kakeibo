@@ -1,11 +1,9 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
-// ↓ パスを修正済みです
 import { auth, db } from './firebase'; 
-// ↓ ここを signInWithPopup に変更しました！
 import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { collection, addDoc, query, onSnapshot, orderBy, Timestamp, deleteDoc, doc, updateDoc, setDoc, getDoc } from 'firebase/firestore';
+import { collection, addDoc, query, onSnapshot, orderBy, Timestamp, deleteDoc, doc, updateDoc, setDoc } from 'firebase/firestore';
 import toast, { Toaster } from 'react-hot-toast';
 import { format } from 'date-fns';
 
@@ -21,7 +19,6 @@ import SettingsModal from './components/SettingsModal';
 
 const ALLOWED_EMAILS = ["daiki.2002.1014@gmail.com", "negishi.akane1553@gmail.com"];
 
-// 初期カテゴリ
 const DEFAULT_CATEGORIES = [
   { name: "食費", icon: "🍙" },
   { name: "日用品", icon: "🧻" },
@@ -38,15 +35,16 @@ export default function Home() {
   const [isAllowed, setIsAllowed] = useState(false);
   const [editingEx, setEditingEx] = useState<any>(null);
 
-  const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
+  // ★変更点: タブ管理用
+  const [activeTab, setActiveTab] = useState<'home' | 'calendar'>('home');
   const [currentMonthStr, setCurrentMonthStr] = useState(format(new Date(), 'yyyy-MM'));
   const [selectedDateStr, setSelectedDateStr] = useState(new Date().toISOString().split('T')[0]);
    
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
-  // 設定画面の開閉
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // ★変更点: 入力モーダル管理用
+  const [isInputModalOpen, setIsInputModalOpen] = useState(false);
 
-  // 設定データ（予算とカテゴリ）
   const [budget, setBudget] = useState(0);
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
 
@@ -60,7 +58,6 @@ export default function Home() {
     return () => unsubscribe();
   }, []);
 
-  // 設定データの読み込み
   useEffect(() => {
     if (!user || !isAllowed) return;
     const unsubSettings = onSnapshot(doc(db, "settings", "common"), (doc) => {
@@ -71,7 +68,6 @@ export default function Home() {
         }
     });
 
-    // 支出データの読み込み
     const q = query(collection(db, "expenses"), orderBy("date", "desc"));
     const unsubExpenses = onSnapshot(q, (snapshot) => {
       setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -80,7 +76,6 @@ export default function Home() {
     return () => { unsubSettings(); unsubExpenses(); };
   }, [user, isAllowed]);
 
-  // 設定の保存処理
   const handleSaveSettings = async (newBudget: number, newCategories: any[]) => {
       try {
           await setDoc(doc(db, "settings", "common"), {
@@ -95,39 +90,30 @@ export default function Home() {
 
   const stats = useMemo(() => {
     const res: any = { total: 0, users: {} };
-    // まず枠を作る
     ALLOWED_EMAILS.forEach(email => {
       res.users[email] = { paid: 0, shouldPay: 0, repaid: 0, received: 0, photo: '', name: '' };
     });
 
-    // 自分と相手のメールアドレスを特定
     const myEmail = user?.email;
     const partnerEmail = ALLOWED_EMAILS.find(e => e !== myEmail);
 
     expenses.forEach(ex => {
-      // 1. アイコンと名前の更新（ここを修正！）
-      // 誰が払ったか(payerEmail)に関係なく、「入力した人(uid)」の情報を正しい箱に入れる
-      
+      // アイコンロジック修正済み
       if (user && ex.uid === user.uid) {
-        // 自分が入力したデータなら、自分のアイコンとして採用
         if (myEmail && res.users[myEmail]) {
             res.users[myEmail].photo = ex.userPhoto;
             res.users[myEmail].name = ex.userName;
         }
       } else {
-        // 自分じゃない人が入力したデータなら、それはパートナー（彼女）のアイコン
-        // ※「自分以外＝彼女」とみなす
         if (partnerEmail && res.users[partnerEmail]) {
             res.users[partnerEmail].photo = ex.userPhoto;
             res.users[partnerEmail].name = ex.userName;
         }
       }
 
-      // 2. お金の計算（ここは今まで通り）
       let payerEmail = ex.payerEmail;
-      // 古いデータなどでpayerEmailがない場合の救済措置
       if (!payerEmail && ex.uid === user?.uid) payerEmail = user?.email;
-      if (!payerEmail) return; // それでも不明なら計算しない
+      if (!payerEmail) return;
 
       if (ex.type === 'settlement') {
         const receiverEmail = ex.category;
@@ -138,7 +124,7 @@ export default function Home() {
         res.total += amt;
         
         if (res.users[payerEmail]) res.users[payerEmail].paid += amt;
-
+        
         const ratio = ex.myRatio ?? 100;
         const otherRatio = 100 - ratio;
         const otherEmail = ALLOWED_EMAILS.find(e => e !== payerEmail);
@@ -154,13 +140,13 @@ export default function Home() {
     return expenses.filter(ex => {
       const d = ex.date?.toDate();
       if (!d) return false;
-      if (viewMode === 'calendar') {
+      if (activeTab === 'calendar') {
         return format(d, 'yyyy-MM-dd') === selectedDateStr;
       } else {
         return format(d, 'yyyy-MM') === currentMonthStr;
       }
     });
-  }, [expenses, viewMode, selectedDateStr, currentMonthStr]);
+  }, [expenses, activeTab, selectedDateStr, currentMonthStr]);
 
   const currentMonthTotal = useMemo(() => {
      return expenses.filter(ex => {
@@ -193,7 +179,9 @@ export default function Home() {
         setEditingEx(null);
       } else {
         await addDoc(collection(db, "expenses"), saveData);
+        toast.success("記録しました！");
       }
+      setIsInputModalOpen(false); // 入力後に閉じる
     } catch (error) {
       console.error(error);
       toast.error("エラーが発生しました");
@@ -236,59 +224,53 @@ export default function Home() {
       return;
     }
     setEditingEx(ex);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    toast("編集モードです✏️");
+    setIsInputModalOpen(true); // 編集時もモーダルを開く
   };
 
-  // ログイン処理（ポップアップ方式に変更）
   const handleLogin = async () => {
     try {
-      await signInWithPopup(auth, new GoogleAuthProvider());
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      await signInWithPopup(auth, provider);
     } catch (error) {
       console.error("Login failed", error);
       toast.error("ログインに失敗しました");
     }
   };
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#FFF5F7] text-pink-400 font-bold animate-pulse">読み込み中...💕</div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#FFF5F7] text-pink-400 font-bold animate-pulse">Loading...</div>;
 
   return (
-    <main className="min-h-screen bg-[#FFF5F7] text-slate-600 pb-24 font-sans selection:bg-pink-200">
+    <main className="min-h-screen bg-[#FFF5F7] text-slate-600 font-sans selection:bg-pink-200 pb-24">
       <Toaster position="bottom-center" toastOptions={{ style: { borderRadius: '20px', background: 'rgba(255,255,255,0.9)', color: '#333' } }} />
       
-      <SettlementModal 
-        isOpen={isSettleModalOpen} 
-        onClose={() => setIsSettleModalOpen(false)}
-        onSettle={handleSettleSubmit}
-        maxAmount={myDiff}
-        users={stats.users}
-        currentUserEmail={user?.email || ""}
-        partnerEmail={ALLOWED_EMAILS.find(e => e !== user?.email) || ""}
-      />
+      {/* モーダル類 */}
+      <SettlementModal isOpen={isSettleModalOpen} onClose={() => setIsSettleModalOpen(false)} onSettle={handleSettleSubmit} maxAmount={myDiff} users={stats.users} currentUserEmail={user?.email || ""} partnerEmail={ALLOWED_EMAILS.find(e => e !== user?.email) || ""} />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} currentBudget={budget} currentCategories={categories} onSave={handleSaveSettings} />
 
-      <SettingsModal 
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        currentBudget={budget}
-        currentCategories={categories}
-        onSave={handleSaveSettings}
-      />
+      {/* ★入力用モーダル（下から出てくる） */}
+      {isInputModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={(e) => {if(e.target === e.currentTarget) setIsInputModalOpen(false)}}>
+          <div className="bg-white w-full max-w-md rounded-t-[30px] p-6 animate-in slide-in-from-bottom duration-300">
+             <div className="w-12 h-1 bg-gray-200 rounded-full mx-auto mb-6"></div>
+             <ExpenseForm user={user} users={stats.users} categories={categories} onSubmit={handleSaveExpense} editingData={editingEx} onCancelEdit={() => { setEditingEx(null); setIsInputModalOpen(false); }} />
+          </div>
+        </div>
+      )}
 
       <div className="max-w-md mx-auto px-5">
-        <header className="pt-10 pb-6 flex justify-between items-center">
+        {/* ヘッダー */}
+        <header className="pt-12 pb-6 flex justify-between items-center">
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-700">ふたりの家計簿 🧸</h1>
-            <p className="text-[10px] text-pink-400 font-bold mt-1">Two people's household account book</p>
+            <h1 className="text-2xl font-black tracking-tighter text-slate-800">家計簿</h1>
           </div>
           <div className="flex gap-3">
              {user && (
-                 <button onClick={() => setIsSettingsOpen(true)} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors">
-                     ⚙️
-                 </button>
+                 <button onClick={() => setIsSettingsOpen(true)} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors">⚙️</button>
              )}
              {user && (
                 <button onClick={() => { if(window.confirm('ログアウトしますか？')) signOut(auth) }} className="transition-transform hover:scale-110">
-                <img src={user.photoURL || ""} className="w-10 h-10 rounded-full border-2 border-white shadow-md" />
+                <img src={user.photoURL || ""} className="w-10 h-10 rounded-full border-2 border-white shadow-md" alt="icon" />
                 </button>
              )}
           </div>
@@ -297,73 +279,66 @@ export default function Home() {
         {user && isAllowed ? (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
             
-            <div className="flex gap-2">
-                <div className="bg-white p-1 rounded-full shadow-sm flex text-xs font-bold flex-1">
-                    <button onClick={() => setViewMode('list')} className={`flex-1 py-2 rounded-full transition-all ${viewMode === 'list' ? 'bg-pink-400 text-white shadow-md' : 'text-slate-400'}`}>📋 リスト</button>
-                    <button onClick={() => setViewMode('calendar')} className={`flex-1 py-2 rounded-full transition-all ${viewMode === 'calendar' ? 'bg-pink-400 text-white shadow-md' : 'text-slate-400'}`}>📅 カレンダー</button>
-                </div>
-                {viewMode === 'list' && (
-                    <div className="bg-white p-1 rounded-full shadow-sm flex items-center px-2 gap-2 text-xs font-bold text-pink-400">
-                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() - 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}}>←</button>
-                        <span>{currentMonthStr.split('-')[1]}月</span>
-                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() + 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}}>→</button>
-                    </div>
-                )}
-            </div>
-
-            {viewMode === 'list' ? (
+            {/* メインコンテンツ切り替え */}
+            {activeTab === 'home' ? (
                 <>
                     <BudgetCard budget={budget} totalExpense={currentMonthTotal} />
+                    
+                    {/* 月切り替え */}
+                    <div className="flex justify-center items-center gap-4 py-2">
+                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() - 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}} className="text-pink-400 font-bold p-2 hover:bg-white rounded-full transition-colors">←</button>
+                        <span className="text-lg font-bold text-slate-700">{currentMonthStr.split('-')[0]}年 {currentMonthStr.split('-')[1]}月</span>
+                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() + 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}} className="text-pink-400 font-bold p-2 hover:bg-white rounded-full transition-colors">→</button>
+                    </div>
 
                     <section className="relative overflow-hidden bg-white p-6 rounded-[30px] shadow-lg shadow-pink-100 text-center border border-pink-50">
                         <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-pink-300 to-orange-200"></div>
-                        <p className="text-pink-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Expenses (Selected)</p>
+                        <p className="text-pink-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Expenses</p>
                         <div className="text-4xl font-black text-slate-700 tracking-tighter">
                             <span className="text-lg text-slate-400 mr-1">¥</span>
                             {displayExpenses.filter(e => e.type !== 'settlement').reduce((sum, e) => sum + e.amount, 0).toLocaleString()}
                         </div>
                     </section>
                     
-                    <BalanceStatus 
-                        stats={stats} 
-                        currentUserEmail={user?.email || ""} 
-                        onOpenSettleModal={() => setIsSettleModalOpen(true)} 
-                    />
-
+                    <BalanceStatus stats={stats} currentUserEmail={user?.email || ""} onOpenSettleModal={() => setIsSettleModalOpen(true)} />
                     <SummaryChart expenses={displayExpenses.filter(e => e.type !== 'settlement')} />
+                    
+                    <HistoryList expenses={displayExpenses} users={stats.users} categories={categories} onEdit={handleEdit} onDelete={handleDelete} />
                 </>
             ) : (
                 <CalendarView expenses={expenses} currentDate={selectedDateStr} onDateChange={setSelectedDateStr} />
             )}
-
-            <ExpenseForm 
-                user={user}
-                users={stats.users}
-                categories={categories}
-                onSubmit={handleSaveExpense}
-                editingData={editingEx}
-                onCancelEdit={() => { setEditingEx(null); toast("キャンセルしました"); }}
-            />
-
-            <HistoryList 
-                expenses={displayExpenses} 
-                users={stats.users} 
-                categories={categories}
-                onEdit={handleEdit} 
-                onDelete={handleDelete} 
-            />
           </div>
         ) : (
-           !loading && (
-             <div className="text-center py-20">
-               {/* ↓ ここも signInWithPopup を使うように変更済み */}
-               <button onClick={handleLogin} className="bg-slate-800 text-white px-8 py-4 rounded-full font-bold">
-                 Googleでログイン
-               </button>
-             </div>
-           )
+           !loading && (<div className="text-center py-20"><button onClick={handleLogin} className="bg-slate-800 text-white px-8 py-4 rounded-full font-bold shadow-lg active:scale-95 transition-transform">Googleでログイン</button></div>)
         )}
       </div>
+
+      {/* ★FAB（プラスボタン） */}
+      {user && isAllowed && (
+        <button 
+          onClick={() => { setEditingEx(null); setIsInputModalOpen(true); }}
+          className="fixed bottom-24 right-6 w-14 h-14 bg-slate-800 text-white rounded-full shadow-xl flex items-center justify-center text-3xl font-light hover:scale-110 active:scale-90 transition-all z-40"
+        >
+          ＋
+        </button>
+      )}
+
+      {/* ★ボトムナビゲーション */}
+      {user && isAllowed && (
+        <nav className="fixed bottom-0 left-0 w-full bg-white/90 backdrop-blur-md border-t border-slate-100 pb-safe pt-2 px-6 z-40">
+           <div className="max-w-md mx-auto flex justify-around items-center h-16">
+              <button onClick={() => setActiveTab('home')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'home' ? 'text-pink-500' : 'text-slate-300'}`}>
+                <span className="text-2xl">🏠</span>
+                <span className="text-[10px] font-bold">ホーム</span>
+              </button>
+              <button onClick={() => setActiveTab('calendar')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'calendar' ? 'text-pink-500' : 'text-slate-300'}`}>
+                <span className="text-2xl">📅</span>
+                <span className="text-[10px] font-bold">カレンダー</span>
+              </button>
+           </div>
+        </nav>
+      )}
     </main>
   );
 }
