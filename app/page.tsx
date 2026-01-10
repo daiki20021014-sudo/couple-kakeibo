@@ -95,23 +95,39 @@ export default function Home() {
 
   const stats = useMemo(() => {
     const res: any = { total: 0, users: {} };
+    // まず枠を作る
     ALLOWED_EMAILS.forEach(email => {
       res.users[email] = { paid: 0, shouldPay: 0, repaid: 0, received: 0, photo: '', name: '' };
     });
 
-    expenses.forEach(ex => {
-      let payerEmail = ex.payerEmail;
-      if (!payerEmail && ex.uid === auth.currentUser?.uid) payerEmail = auth.currentUser?.email;
-      if (!payerEmail) return;
+    // 自分と相手のメールアドレスを特定
+    const myEmail = user?.email;
+    const partnerEmail = ALLOWED_EMAILS.find(e => e !== myEmail);
 
-      if (res.users[payerEmail]) {
-        res.users[payerEmail].photo = ex.userPhoto;
-        res.users[payerEmail].name = ex.userName;
+    expenses.forEach(ex => {
+      // 1. アイコンと名前の更新（ここを修正！）
+      // 誰が払ったか(payerEmail)に関係なく、「入力した人(uid)」の情報を正しい箱に入れる
+      
+      if (user && ex.uid === user.uid) {
+        // 自分が入力したデータなら、自分のアイコンとして採用
+        if (myEmail && res.users[myEmail]) {
+            res.users[myEmail].photo = ex.userPhoto;
+            res.users[myEmail].name = ex.userName;
+        }
+      } else {
+        // 自分じゃない人が入力したデータなら、それはパートナー（彼女）のアイコン
+        // ※「自分以外＝彼女」とみなす
+        if (partnerEmail && res.users[partnerEmail]) {
+            res.users[partnerEmail].photo = ex.userPhoto;
+            res.users[partnerEmail].name = ex.userName;
+        }
       }
-      if (ex.type !== 'settlement' && res.users[ex.payerEmail]) {
-         res.users[ex.payerEmail].name = ex.userName;
-         res.users[ex.payerEmail].photo = ex.userPhoto;
-      }
+
+      // 2. お金の計算（ここは今まで通り）
+      let payerEmail = ex.payerEmail;
+      // 古いデータなどでpayerEmailがない場合の救済措置
+      if (!payerEmail && ex.uid === user?.uid) payerEmail = user?.email;
+      if (!payerEmail) return; // それでも不明なら計算しない
 
       if (ex.type === 'settlement') {
         const receiverEmail = ex.category;
@@ -132,7 +148,7 @@ export default function Home() {
       }
     });
     return res;
-  }, [expenses]);
+  }, [expenses, user]);
 
   const displayExpenses = useMemo(() => {
     return expenses.filter(ex => {
