@@ -35,14 +35,16 @@ export default function Home() {
   const [isAllowed, setIsAllowed] = useState(false);
   const [editingEx, setEditingEx] = useState<any>(null);
 
-  // ★変更点: タブ管理用
-  const [activeTab, setActiveTab] = useState<'home' | 'calendar'>('home');
+  // タブ管理（home | history）に変更
+  const [activeTab, setActiveTab] = useState<'home' | 'history'>('home');
+  // 履歴タブ内での表示モード（リスト or カレンダー）
+  const [historyMode, setHistoryMode] = useState<'list' | 'calendar'>('list');
+
   const [currentMonthStr, setCurrentMonthStr] = useState(format(new Date(), 'yyyy-MM'));
   const [selectedDateStr, setSelectedDateStr] = useState(new Date().toISOString().split('T')[0]);
    
   const [isSettleModalOpen, setIsSettleModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  // ★変更点: 入力モーダル管理用
   const [isInputModalOpen, setIsInputModalOpen] = useState(false);
 
   const [budget, setBudget] = useState(0);
@@ -98,7 +100,7 @@ export default function Home() {
     const partnerEmail = ALLOWED_EMAILS.find(e => e !== myEmail);
 
     expenses.forEach(ex => {
-      // アイコンロジック修正済み
+      // アイコン処理
       if (user && ex.uid === user.uid) {
         if (myEmail && res.users[myEmail]) {
             res.users[myEmail].photo = ex.userPhoto;
@@ -136,17 +138,18 @@ export default function Home() {
     return res;
   }, [expenses, user]);
 
+  // 今月のデータのみ抽出（ダッシュボード用）
   const displayExpenses = useMemo(() => {
     return expenses.filter(ex => {
       const d = ex.date?.toDate();
       if (!d) return false;
-      if (activeTab === 'calendar') {
+      if (activeTab === 'history' && historyMode === 'calendar') {
         return format(d, 'yyyy-MM-dd') === selectedDateStr;
       } else {
         return format(d, 'yyyy-MM') === currentMonthStr;
       }
     });
-  }, [expenses, activeTab, selectedDateStr, currentMonthStr]);
+  }, [expenses, activeTab, historyMode, selectedDateStr, currentMonthStr]);
 
   const currentMonthTotal = useMemo(() => {
      return expenses.filter(ex => {
@@ -161,6 +164,36 @@ export default function Home() {
       if (!d) return 0;
       return (d.paid - d.shouldPay) + (d.repaid - d.received);
   }, [stats, user]);
+
+  // 2人の支出比較データ（今月の全支出における自分の割合など）
+  const paymentRatio = useMemo(() => {
+      if (!user?.email) return { myPay: 0, partnerPay: 0, myPercent: 0 };
+      const myEmail = user.email;
+      const partnerEmail = ALLOWED_EMAILS.find(e => e !== myEmail) || '';
+      
+      // 今月の支出（清算除く）で計算
+      const thisMonthEx = expenses.filter(ex => {
+          const d = ex.date?.toDate();
+          return d && format(d, 'yyyy-MM') === currentMonthStr && ex.type !== 'settlement';
+      });
+
+      let myPay = 0;
+      let partnerPay = 0;
+
+      thisMonthEx.forEach(ex => {
+          let payer = ex.payerEmail;
+          if (!payer && ex.uid === user.uid) payer = myEmail;
+          
+          if (payer === myEmail) myPay += ex.amount;
+          else if (payer === partnerEmail) partnerPay += ex.amount;
+      });
+
+      const total = myPay + partnerPay;
+      const myPercent = total === 0 ? 0 : Math.round((myPay / total) * 100);
+
+      return { myPay, partnerPay, myPercent };
+  }, [expenses, currentMonthStr, user]);
+
 
   const handleSaveExpense = async (data: any) => {
     if (!user) return;
@@ -181,7 +214,7 @@ export default function Home() {
         await addDoc(collection(db, "expenses"), saveData);
         toast.success("記録しました！");
       }
-      setIsInputModalOpen(false); // 入力後に閉じる
+      setIsInputModalOpen(false);
     } catch (error) {
       console.error(error);
       toast.error("エラーが発生しました");
@@ -198,7 +231,7 @@ export default function Home() {
               category: receiverEmail,
               date: Timestamp.now(),
               uid: user.uid, 
-              userName: user.displayName,
+              userName: user.displayName, 
               userPhoto: user.photoURL,
               payerEmail: payerEmail,
               type: 'settlement',
@@ -224,7 +257,7 @@ export default function Home() {
       return;
     }
     setEditingEx(ex);
-    setIsInputModalOpen(true); // 編集時もモーダルを開く
+    setIsInputModalOpen(true);
   };
 
   const handleLogin = async () => {
@@ -241,14 +274,14 @@ export default function Home() {
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#FFF5F7] text-pink-400 font-bold animate-pulse">Loading...</div>;
 
   return (
-    <main className="min-h-screen bg-[#FFF5F7] text-slate-600 font-sans selection:bg-pink-200 pb-24">
+    <main className="min-h-screen bg-[#FFF5F7] text-slate-600 font-sans selection:bg-pink-200 pb-32">
       <Toaster position="bottom-center" toastOptions={{ style: { borderRadius: '20px', background: 'rgba(255,255,255,0.9)', color: '#333' } }} />
       
       {/* モーダル類 */}
       <SettlementModal isOpen={isSettleModalOpen} onClose={() => setIsSettleModalOpen(false)} onSettle={handleSettleSubmit} maxAmount={myDiff} users={stats.users} currentUserEmail={user?.email || ""} partnerEmail={ALLOWED_EMAILS.find(e => e !== user?.email) || ""} />
       <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} currentBudget={budget} currentCategories={categories} onSave={handleSaveSettings} />
 
-      {/* ★入力用モーダル（下から出てくる） */}
+      {/* 入力用モーダル */}
       {isInputModalOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={(e) => {if(e.target === e.currentTarget) setIsInputModalOpen(false)}}>
           <div className="bg-white w-full max-w-md rounded-t-[30px] p-6 animate-in slide-in-from-bottom duration-300">
@@ -260,10 +293,10 @@ export default function Home() {
 
       <div className="max-w-md mx-auto px-5">
         {/* ヘッダー */}
-        <header className="pt-12 pb-6 flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-black tracking-tighter text-slate-800">家計簿</h1>
-          </div>
+        <header className="pt-12 pb-4 flex justify-between items-center">
+          <h1 className="text-2xl font-black tracking-tighter text-slate-800">
+              {activeTab === 'home' ? 'Dashboard' : 'History'}
+          </h1>
           <div className="flex gap-3">
              {user && (
                  <button onClick={() => setIsSettingsOpen(true)} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors">⚙️</button>
@@ -279,42 +312,78 @@ export default function Home() {
         {user && isAllowed ? (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
             
-            {/* メインコンテンツ切り替え */}
-            {activeTab === 'home' ? (
+            {/* ★★★ 1. ホーム（ダッシュボード）タブ ★★★ */}
+            {activeTab === 'home' && (
                 <>
+                    {/* ① 予算カード（既存） */}
                     <BudgetCard budget={budget} totalExpense={currentMonthTotal} />
-                    
-                    {/* 月切り替え */}
-                    <div className="flex justify-center items-center gap-4 py-2">
-                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() - 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}} className="text-pink-400 font-bold p-2 hover:bg-white rounded-full transition-colors">←</button>
-                        <span className="text-lg font-bold text-slate-700">{currentMonthStr.split('-')[0]}年 {currentMonthStr.split('-')[1]}月</span>
-                        <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() + 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}} className="text-pink-400 font-bold p-2 hover:bg-white rounded-full transition-colors">→</button>
-                    </div>
 
-                    <section className="relative overflow-hidden bg-white p-6 rounded-[30px] shadow-lg shadow-pink-100 text-center border border-pink-50">
-                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-pink-300 to-orange-200"></div>
-                        <p className="text-pink-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Expenses</p>
-                        <div className="text-4xl font-black text-slate-700 tracking-tighter">
-                            <span className="text-lg text-slate-400 mr-1">¥</span>
-                            {displayExpenses.filter(e => e.type !== 'settlement').reduce((sum, e) => sum + e.amount, 0).toLocaleString()}
+                    {/* ② 貸し借り状況（ダッシュボードの主役） */}
+                    <BalanceStatus stats={stats} currentUserEmail={user?.email || ""} onOpenSettleModal={() => setIsSettleModalOpen(true)} />
+
+                    {/* ③ 二人の出費比較グラフ（新機能） */}
+                    <section className="bg-white p-6 rounded-[30px] shadow-sm border border-slate-100">
+                        <h3 className="text-xs font-bold text-gray-400 mb-4 uppercase tracking-widest">Payment Balance ({currentMonthStr.split('-')[1]}月)</h3>
+                        <div className="flex items-end gap-2 h-24 mb-2">
+                             {/* 自分のバー */}
+                             <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
+                                <span className="text-xs font-bold text-slate-700">¥{paymentRatio.myPay.toLocaleString()}</span>
+                                <div className="w-full bg-blue-100 rounded-t-xl relative overflow-hidden transition-all group-hover:bg-blue-200" style={{ height: `${paymentRatio.myPercent}%` }}>
+                                    <div className="absolute bottom-0 left-0 w-full h-1 bg-blue-400"></div>
+                                </div>
+                             </div>
+                             {/* 相手のバー */}
+                             <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
+                                <span className="text-xs font-bold text-slate-700">¥{paymentRatio.partnerPay.toLocaleString()}</span>
+                                <div className="w-full bg-pink-100 rounded-t-xl relative overflow-hidden transition-all group-hover:bg-pink-200" style={{ height: `${100 - paymentRatio.myPercent}%` }}>
+                                    <div className="absolute bottom-0 left-0 w-full h-1 bg-pink-400"></div>
+                                </div>
+                             </div>
+                        </div>
+                        <div className="flex justify-between text-[10px] text-gray-400 font-bold px-2">
+                            <span>YOU ({paymentRatio.myPercent}%)</span>
+                            <span>PARTNER ({100 - paymentRatio.myPercent}%)</span>
                         </div>
                     </section>
-                    
-                    <BalanceStatus stats={stats} currentUserEmail={user?.email || ""} onOpenSettleModal={() => setIsSettleModalOpen(true)} />
+
+                    {/* ④ カテゴリ別チャート（既存） */}
                     <SummaryChart expenses={displayExpenses.filter(e => e.type !== 'settlement')} />
-                    
-                    <HistoryList expenses={displayExpenses} users={stats.users} categories={categories} onEdit={handleEdit} onDelete={handleDelete} />
                 </>
-            ) : (
-                <CalendarView expenses={expenses} currentDate={selectedDateStr} onDateChange={setSelectedDateStr} />
             )}
+
+            {/* ★★★ 2. 履歴タブ ★★★ */}
+            {activeTab === 'history' && (
+                <>
+                    {/* 月切り替えナビゲーション */}
+                    <div className="bg-white p-2 rounded-2xl shadow-sm flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-4 px-2">
+                            <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() - 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 text-pink-400 font-bold">←</button>
+                            <span className="text-lg font-black text-slate-700">{currentMonthStr.split('-')[0]}<span className="text-xs font-normal text-gray-400 ml-1">年</span> {currentMonthStr.split('-')[1]}<span className="text-xs font-normal text-gray-400 ml-1">月</span></span>
+                            <button onClick={() => {const d = new Date(currentMonthStr); d.setMonth(d.getMonth() + 1); setCurrentMonthStr(format(d, 'yyyy-MM'));}} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 text-pink-400 font-bold">→</button>
+                        </div>
+                        {/* カレンダー切り替えスイッチ */}
+                        <div className="flex bg-slate-100 rounded-lg p-1">
+                            <button onClick={() => setHistoryMode('list')} className={`p-2 rounded-md transition-all ${historyMode === 'list' ? 'bg-white shadow text-pink-500' : 'text-gray-400'}`}>📄</button>
+                            <button onClick={() => setHistoryMode('calendar')} className={`p-2 rounded-md transition-all ${historyMode === 'calendar' ? 'bg-white shadow text-pink-500' : 'text-gray-400'}`}>📅</button>
+                        </div>
+                    </div>
+                    
+                    {/* コンテンツ */}
+                    {historyMode === 'list' ? (
+                        <HistoryList expenses={displayExpenses} users={stats.users} categories={categories} onEdit={handleEdit} onDelete={handleDelete} />
+                    ) : (
+                        <CalendarView expenses={expenses} currentDate={selectedDateStr} onDateChange={setSelectedDateStr} />
+                    )}
+                </>
+            )}
+
           </div>
         ) : (
            !loading && (<div className="text-center py-20"><button onClick={handleLogin} className="bg-slate-800 text-white px-8 py-4 rounded-full font-bold shadow-lg active:scale-95 transition-transform">Googleでログイン</button></div>)
         )}
       </div>
 
-      {/* ★FAB（プラスボタン） */}
+      {/* FAB（プラスボタン） */}
       {user && isAllowed && (
         <button 
           onClick={() => { setEditingEx(null); setIsInputModalOpen(true); }}
@@ -324,17 +393,17 @@ export default function Home() {
         </button>
       )}
 
-      {/* ★ボトムナビゲーション */}
+      {/* ボトムナビゲーション（ホーム / 履歴） */}
       {user && isAllowed && (
         <nav className="fixed bottom-0 left-0 w-full bg-white/90 backdrop-blur-md border-t border-slate-100 pb-safe pt-2 px-6 z-40">
            <div className="max-w-md mx-auto flex justify-around items-center h-16">
-              <button onClick={() => setActiveTab('home')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'home' ? 'text-pink-500' : 'text-slate-300'}`}>
-                <span className="text-2xl">🏠</span>
+              <button onClick={() => setActiveTab('home')} className={`flex flex-col items-center gap-1 w-20 transition-colors ${activeTab === 'home' ? 'text-pink-500' : 'text-slate-300'}`}>
+                <span className="text-2xl">{activeTab === 'home' ? '🏠' : '🛖'}</span>
                 <span className="text-[10px] font-bold">ホーム</span>
               </button>
-              <button onClick={() => setActiveTab('calendar')} className={`flex flex-col items-center gap-1 w-16 transition-colors ${activeTab === 'calendar' ? 'text-pink-500' : 'text-slate-300'}`}>
-                <span className="text-2xl">📅</span>
-                <span className="text-[10px] font-bold">カレンダー</span>
+              <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center gap-1 w-20 transition-colors ${activeTab === 'history' ? 'text-pink-500' : 'text-slate-300'}`}>
+                <span className="text-2xl">{activeTab === 'history' ? '📂' : '📁'}</span>
+                <span className="text-[10px] font-bold">履歴</span>
               </button>
            </div>
         </nav>
